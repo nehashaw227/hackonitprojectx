@@ -1,0 +1,58 @@
+@import "tailwindcss";
+
+@theme {
+  --color-neon-green: #00ff66;
+  --color-neon-purple: #bc13fe;
+  --color-neon-blue: #00d2ff;
+  --font-display: "Inter", "system-ui", sans-serif;
+}
+
+@layer base {
+  body {
+    @apply bg-black text-white antialiased selection:bg-neon-green selection:text-black;
+    font-family: var(--font-display);
+  }
+}
+
+.glass {
+  @apply bg-white/5 backdrop-blur-2xl border border-white/10;
+}
+
+.neon-border {
+  @apply border border-neon-green/30 shadow-[0_0_15px_rgba(0,255,102,0.1)];
+}
+
+.neon-text {
+  @apply text-neon-green drop-shadow-[0_0_8px_rgba(0,255,102,0.5)];
+}
+
+.prose {
+  @apply text-slate-300;
+}
+
+.prose h1, .prose h2, .prose h3 {
+  @apply text-white font-black uppercase tracking-tighter mt-6 mb-4;
+}
+
+.prose p {
+  @apply mb-4 leading-relaxed;
+}
+
+.prose ul {
+  @apply list-disc list-inside mb-4 space-y-2;
+}
+
+.prose code {
+  @apply bg-neon-green/10 px-2 py-0.5 rounded text-neon-green font-mono text-sm;
+}
+
+/* Custom Scrollbar */
+::-webkit-scrollbar {
+  width: 4px;
+}
+::-webkit-scrollbar-track {
+  @apply bg-black;
+}
+::-webkit-scrollbar-thumb {
+  @apply bg-neon-green/20 hover:bg-neon-green/50 transition-colors;
+}

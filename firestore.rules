@@ -1,0 +1,44 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Helper Functions
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+    function isDocOwner() {
+      return isAuthenticated() && request.auth.uid == resource.data.userId;
+    }
+    function isNewDocOwner() {
+      return isAuthenticated() && request.auth.uid == request.resource.data.userId;
+    }
+
+    // User Rules
+    match /users/{userId} {
+      allow read, write: if isOwner(userId);
+    }
+
+    // Roadmap Rules
+    match /roadmaps/{roadmapId} {
+      allow read: if isDocOwner() || resource.data.isPublic == true;
+      allow create: if isNewDocOwner();
+      allow update, delete: if isDocOwner();
+    }
+
+    // Note Rules
+    match /notes/{noteId} {
+      allow read: if isDocOwner();
+      allow create: if isNewDocOwner();
+      allow update, delete: if isDocOwner();
+    }
+
+    // Quiz Rules
+    match /quizzes/{quizId} {
+      allow read: if isDocOwner();
+      allow create: if isNewDocOwner();
+      allow update, delete: if isDocOwner();
+    }
+  }
+}

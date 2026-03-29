@@ -1,11 +1,10 @@
 import { useState, useEffect, useMemo, useRef } from 'react';
-import { auth, db } from './lib/firebase';
-import { GoogleAuthProvider, signInWithPopup, onAuthStateChanged, User } from 'firebase/auth';
-import { collection, query, where, onSnapshot, addDoc, updateDoc, doc, getDoc, getDocs } from 'firebase/firestore';
+import { supabase } from './lib/supabase';
+import { User } from '@supabase/supabase-js';
 import { Canvas, useFrame } from '@react-three/fiber';
 import { OrbitControls } from '@react-three/drei';
 import { FloatingDashboard, TopicNode, SceneControls } from './components/ThreeDashboard';
-import { generateRoadmap, solveDoubt, generateQuiz, generateRevisionNotes, findYouTubeVideo, generateTopicSummary } from './lib/gemini';
+import { generateRoadmap, solveDoubt, generateQuiz, generateRevisionNotes, findYouTubeVideo, generateTopicSummary } from './lib/ai';
 import { Loader2, Send, BookOpen, CheckCircle, Plus, FileText, HelpCircle, Download, LogIn, LogOut, ArrowLeft, Share2, Copy, Check } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import ReactMarkdown from 'react-markdown';
@@ -55,6 +54,11 @@ function Starfield() {
 
 export default function App() {
   const [user, setUser] = useState<User | null>(null);
+  const [authEmail, setAuthEmail] = useState('');
+  const [authPassword, setAuthPassword] = useState('');
+  const [isSignUp, setIsSignUp] = useState(false);
+  const [authError, setAuthError] = useState<string | null>(null);
+  const [authLoading, setAuthLoading] = useState(false);
   const [loading, setLoading] = useState(true);
   const [roadmaps, setRoadmaps] = useState<any[]>([]);
   const [selectedRoadmap, setSelectedRoadmap] = useState<any>(null);
@@ -95,11 +99,8 @@ export default function App() {
     if (sharedRoadmapId) {
       const fetchSharedRoadmap = async () => {
         try {
-          const roadmapDoc = await getDoc(doc(db, 'roadmaps', sharedRoadmapId));
-          if (roadmapDoc.exists()) {
-            const data = { id: roadmapDoc.id, ...roadmapDoc.data() };
-            setSelectedRoadmap(data);
-          }
+          const { data } = await supabase.from('roadmaps').select('*').eq('id', sharedRoadmapId).single();
+          if (data) setSelectedRoadmap(data);
         } catch (error) {
           console.error("Error fetching shared roadmap:", error);
         }
@@ -109,22 +110,22 @@ export default function App() {
   }, [sharedRoadmapId]);
 
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, (u) => {
-      setUser(u);
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      setUser(session?.user ?? null);
       setLoading(false);
     });
-    return () => unsubscribe();
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_e, session) => setUser(session?.user ?? null));
+    return () => subscription.unsubscribe();
   }, []);
 
+  const loadRoadmaps = async () => {
+    if (!user) return;
+    const { data } = await supabase.from('roadmaps').select('*').eq('userId', user.id);
+    if (data) setRoadmaps(data);
+  };
+
   useEffect(() => {
-    if (user) {
-      const q = query(collection(db, 'roadmaps'), where('userId', '==', user.uid));
-      const unsubscribe = onSnapshot(q, (snapshot) => {
-        const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-        setRoadmaps(data);
-      });
-      return () => unsubscribe();
-    }
+    loadRoadmaps();
   }, [user]);
 
   useEffect(() => {
@@ -135,36 +136,115 @@ export default function App() {
       }
 
       try {
-        const noteQuery = query(
-          collection(db, 'notes'),
-          where('userId', '==', user.uid),
-          where('topicId', '==', selectedTopic.id)
-        );
-        const noteSnap = await getDocs(noteQuery);
-        setTopicNotes(noteSnap.docs.map(doc => ({ id: doc.id, ...doc.data() })));
-
-        const quizQuery = query(
-          collection(db, 'quizzes'),
-          where('userId', '==', user.uid),
-          where('topicId', '==', selectedTopic.id)
-        );
-        const quizSnap = await getDocs(quizQuery);
-        setTopicQuizzes(quizSnap.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+        const { data: notes } = await supabase.from('notes').select('*').eq('userId', user.id).eq('topicId', selectedTopic.id);
+        const { data: quizzes } = await supabase.from('quizzes').select('*').eq('userId', user.id).eq('topicId', selectedTopic.id);
+        setTopicNotes(notes || []);
+        setTopicQuizzes(quizzes || []);
       } catch (error) {
-        console.error('Error loading topic notes:', error);
+        console.error('Error loading topic references:', error);
       }
     };
 
     loadTopicReferences();
   }, [selectedTopic, user]);
+  const exportPDF = () => {
+    if (!selectedRoadmap || !selectedTopic) {
+      alert("Please select a topic first.");
+      return;
+    }
+    try {
+      const doc = new jsPDF();
+      let y = 20;
+      const margin = 15;
+      const pageWidth = doc.internal.pageSize.getWidth();
+      const wrapWidth = pageWidth - margin * 2;
+
+      const addText = (text: string, fontSize: number, isBold: boolean = false, textColor: string = '#000000') => {
+        if (!text) return;
+        doc.setFontSize(fontSize);
+        doc.setFont('helvetica', isBold ? 'bold' : 'normal');
+        doc.setTextColor(textColor);
+        const lines = doc.splitTextToSize(text, wrapWidth);
+        for (const line of lines) {
+          if (y > 280) {
+            doc.addPage();
+            y = 20;
+          }
+          doc.text(line, margin, y);
+          y += fontSize * 0.4 + 2; 
+        }
+        y += 4; 
+      };
+
+      doc.setFillColor(15, 23, 42);
+      doc.rect(0, 0, pageWidth, 30, 'F');
+      y = 20;
+      addText('LUMINA INTELLIGENCE REPORT', 24, true, '#00ffcc');
+      y = 40;
+
+      addText(`Roadmap: ${selectedRoadmap.title}`, 16, true);
+      addText(`Topic Element: ${selectedTopic.title}`, 14, true);
+      addText(selectedTopic.description, 11, false, '#666666');
+      y += 8;
+
+      if (topicSummary) {
+        addText('TOPIC SUMMARY', 12, true, '#000000');
+        addText(topicSummary, 10);
+        y += 6;
+      }
+
+      if (revisionNotes) {
+        addText('REVISION NOTES', 12, true, '#000000');
+        addText(revisionNotes, 10);
+        y += 6;
+      }
+
+      if (topicNotes && topicNotes.length > 0) {
+        addText('PERSONAL LOGS', 12, true, '#000000');
+        topicNotes.forEach((note: any, i: number) => {
+          addText(`Note ${i + 1}: ${note.content}`, 10);
+        });
+        y += 6;
+      }
+
+      if (chatMessages && chatMessages.length > 0) {
+        addText('AI DIALOGUE TRANSCRIPT', 12, true, '#000000');
+        chatMessages.forEach((msg: { role: string, content: string }) => {
+          addText(`${msg.role.toUpperCase()}:`, 9, true, msg.role === 'user' ? '#3b82f6' : '#22c55e');
+          addText(msg.content, 10);
+          y += 3;
+        });
+      }
+
+      if (topicQuizzes && topicQuizzes.length > 0) {
+        y += 8;
+        addText('ASSESSMENTS & QUIZZES', 14, true, '#00ffcc');
+        y += 4;
+        topicQuizzes.forEach((q: any, quizIdx: number) => {
+          addText(`Quiz #${quizIdx + 1} (Score: ${q.score !== null ? q.score : 'N/A'}/${q.questions ? q.questions.length : '?'})`, 12, true);
+          if (q.questions && Array.isArray(q.questions)) {
+             q.questions.forEach((question: any, qIdx: number) => {
+                addText(`Q${qIdx + 1}: ${question.question}`, 10, true);
+                addText(`Answer: ${question.correctAnswer}`, 10, false, '#22c55e');
+                y += 2;
+             });
+          }
+          y += 5;
+        });
+      }
+
+      doc.save(`Lumina-Export-${selectedTopic.title.replace(/\s+/g, '_')}.pdf`);
+    } catch (e) {
+      console.error("PDF generation failed", e);
+      alert("Failed to export PDF format.");
+    }
+  };
 
   const handleShareRoadmap = async () => {
     if (!selectedRoadmap || !user) return;
     setSharing(true);
     try {
-      await updateDoc(doc(db, 'roadmaps', selectedRoadmap.id), {
-        isPublic: true
-      });
+      await supabase.from('roadmaps').update({ isPublic: true }).eq('id', selectedRoadmap.id);
       const shareUrl = `${window.location.origin}${window.location.pathname}?roadmapId=${selectedRoadmap.id}`;
       await navigator.clipboard.writeText(shareUrl);
       setCopied(true);
@@ -182,12 +262,12 @@ export default function App() {
     setGenerating(true);
     try {
       const { id, ...roadmapData } = selectedRoadmap;
-      await addDoc(collection(db, 'roadmaps'), {
+      await supabase.from('roadmaps').insert([{
         ...roadmapData,
-        userId: user.uid,
+        userId: user.id,
         createdAt: new Date().toISOString(),
         isPublic: false
-      });
+      }]);
       alert('Roadmap cloned to your protocols!');
     } catch (error) {
       console.error(error);
@@ -196,9 +276,24 @@ export default function App() {
     }
   };
 
-  const handleLogin = async () => {
-    const provider = new GoogleAuthProvider();
-    await signInWithPopup(auth, provider);
+  const handleAuth = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setAuthError(null);
+    setAuthLoading(true);
+    try {
+      if (isSignUp) {
+        const { error } = await supabase.auth.signUp({ email: authEmail, password: authPassword });
+        if (error) throw error;
+        alert('Check your email to confirm registration or sign in directly.');
+      } else {
+        const { error } = await supabase.auth.signInWithPassword({ email: authEmail, password: authPassword });
+        if (error) throw error;
+      }
+    } catch (err: any) {
+      setAuthError(err.message);
+    } finally {
+      setAuthLoading(false);
+    }
   };
 
   const handleCreateRoadmap = async () => {
@@ -206,14 +301,15 @@ export default function App() {
     setGenerating(true);
     try {
       const topics = await generateRoadmap(syllabus, difficulty);
-      await addDoc(collection(db, 'roadmaps'), {
-        userId: user.uid,
+      await supabase.from('roadmaps').insert([{
+        userId: user.id,
         title: syllabus.slice(0, 30) + '...',
         syllabus,
         difficulty,
         topics: topics.map((t: any) => ({ ...t, completed: false })),
         createdAt: new Date().toISOString()
-      });
+      }]);
+      loadRoadmaps();
       setSyllabus('');
     } catch (error) {
       console.error(error);
@@ -228,7 +324,8 @@ export default function App() {
     const updatedTopics = roadmap.topics.map((t: any) => 
       t.id === topicId ? { ...t, completed: !t.completed } : t
     );
-    await updateDoc(doc(db, 'roadmaps', roadmapId), { topics: updatedTopics });
+    await supabase.from('roadmaps').update({ topics: updatedTopics }).eq('id', roadmapId);
+    loadRoadmaps();
   };
 
   const handleUpdateDetailedDescription = async () => {
@@ -236,7 +333,8 @@ export default function App() {
     const updatedTopics = selectedRoadmap.topics.map((t: any) => 
       t.id === selectedTopic.id ? { ...t, detailedDescription: detailedDescriptionInput } : t
     );
-    await updateDoc(doc(db, 'roadmaps', selectedRoadmap.id), { topics: updatedTopics });
+    await supabase.from('roadmaps').update({ topics: updatedTopics }).eq('id', selectedRoadmap.id);
+    loadRoadmaps();
     setSelectedTopic({ ...selectedTopic, detailedDescription: detailedDescriptionInput });
     setEditingDetailedDescription(false);
   };
@@ -257,21 +355,16 @@ export default function App() {
   const handleAddNote = async () => {
     if (!selectedTopic || !user || !noteContent.trim()) return;
     try {
-      await addDoc(collection(db, 'notes'), {
-        userId: user.uid,
+      await supabase.from('notes').insert([{
+        userId: user.id,
         topicId: selectedTopic.id,
         roadmapId: selectedRoadmap?.id || null,
         content: noteContent.trim(),
         updatedAt: new Date().toISOString(),
-      });
+      }]);
       setNoteContent('');
-      const noteQuery = query(
-        collection(db, 'notes'),
-        where('userId', '==', user.uid),
-        where('topicId', '==', selectedTopic.id)
-      );
-      const noteSnap = await getDocs(noteQuery);
-      setTopicNotes(noteSnap.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+      const { data: notes } = await supabase.from('notes').select('*').eq('userId', user.id).eq('topicId', selectedTopic.id);
+      setTopicNotes(notes || []);
     } catch (error) {
       console.error('Error adding note:', error);
     }
@@ -286,16 +379,16 @@ export default function App() {
       setQuizAnswers({});
       setQuizScore(null);
 
-      const quizDoc = await addDoc(collection(db, 'quizzes'), {
-        userId: user.uid,
+      const { data: quizData } = await supabase.from('quizzes').insert([{
+        userId: user.id,
         topicId: selectedTopic.id,
         roadmapId: selectedRoadmap?.id || null,
         questions: q,
         score: 0,
         completed: false,
         createdAt: new Date().toISOString(),
-      });
-      setCurrentQuizDocId(quizDoc.id);
+      }]).select().single();
+      if (quizData) setCurrentQuizDocId(quizData.id);
     } catch (error) {
       console.error(error);
     } finally {
@@ -352,26 +445,18 @@ export default function App() {
 
     if (currentQuizDocId) {
       try {
-        await updateDoc(doc(db, 'quizzes', currentQuizDocId), {
+        await supabase.from('quizzes').update({
           score,
           completed: true,
           updatedAt: new Date().toISOString(),
-        });
+        }).eq('id', currentQuizDocId);
       } catch (error) {
         console.error('Error updating quiz score:', error);
       }
     }
   };
 
-  const exportPDF = () => {
-    if (!selectedTopic) return;
-    const doc = new jsPDF();
-    doc.setFontSize(20);
-    doc.text(selectedTopic.title, 10, 20);
-    doc.setFontSize(12);
-    doc.text(selectedTopic.description, 10, 30);
-    doc.save(`${selectedTopic.title}_Notes.pdf`);
-  };
+
 
   if (loading) {
     return (
@@ -406,17 +491,24 @@ export default function App() {
             The next generation of AI-powered education. <br />
             Interactive 3D roadmaps, instant doubt solving, and personalized learning paths.
           </p>
-          <div className="pt-8">
-            <button 
-              onClick={handleLogin}
-              className="group relative px-12 py-5 bg-neon-green text-black font-black text-xl uppercase tracking-tighter transition-all hover:scale-105 active:scale-95 overflow-hidden"
-            >
-              <div className="absolute inset-0 bg-white/20 translate-x-[-100%] group-hover:translate-x-[100%] transition-transform duration-500" />
-              <span className="relative flex items-center gap-3">
-                <LogIn className="w-6 h-6" />
-                Initialize Access
-              </span>
-            </button>
+          <div className="pt-8 max-w-sm mx-auto w-full">
+            <form onSubmit={handleAuth} className="p-8 bg-black/80 backdrop-blur-xl border border-white/10 space-y-4">
+              <div className="flex gap-2 mb-6 border-b border-white/10 pb-4">
+                <button type="button" onClick={() => setIsSignUp(false)} className={`flex-1 font-black uppercase text-xs tracking-widest ${!isSignUp ? 'text-neon-green' : 'text-slate-500 hover:text-white'}`}>Log In</button>
+                <button type="button" onClick={() => setIsSignUp(true)} className={`flex-1 font-black uppercase text-xs tracking-widest ${isSignUp ? 'text-neon-green' : 'text-slate-500 hover:text-white'}`}>Sign Up</button>
+              </div>
+              {authError && <div className="p-3 bg-red-500/20 text-red-500 text-xs font-mono mb-4">{authError}</div>}
+              <div>
+                <input type="email" value={authEmail} onChange={e => setAuthEmail(e.target.value)} required placeholder="CODENAME (EMAIL)" className="w-full bg-white/5 border border-white/10 px-4 py-3 font-mono text-sm uppercase outline-none focus:border-neon-green transition-colors" />
+              </div>
+              <div>
+                <input type="password" value={authPassword} onChange={e => setAuthPassword(e.target.value)} required placeholder="ACCESS KEY (PASSWORD)" className="w-full bg-white/5 border border-white/10 px-4 py-3 font-mono text-sm uppercase outline-none focus:border-neon-green transition-colors" />
+              </div>
+              <button disabled={authLoading} type="submit" className="w-full mt-4 bg-neon-green text-black font-black py-4 uppercase tracking-tighter hover:scale-[1.02] flex items-center justify-center gap-3 disabled:opacity-50">
+                {authLoading ? <Loader2 className="animate-spin w-5 h-5"/> : <LogIn className="w-5 h-5"/> }
+                {isSignUp ? 'Initialize Profile' : 'Access System'}
+              </button>
+            </form>
           </div>
         </motion.div>
       </div>
@@ -494,23 +586,20 @@ export default function App() {
           {user ? (
             <>
               <div className="flex items-center gap-3">
-                <img src={user.photoURL || ''} className="w-10 h-10 border border-white/20 grayscale hover:grayscale-0 transition-all" />
+                <img src={user.user_metadata?.avatar_url || undefined} className="w-10 h-10 border border-white/20 grayscale hover:grayscale-0 transition-all" />
                 <div className="flex flex-col">
-                  <span className="text-xs font-black uppercase tracking-tighter">{user.displayName}</span>
+                  <span className="text-xs font-black uppercase tracking-tighter">{user.email?.split('@')[0]}</span>
                   <span className="text-[10px] text-slate-500 font-mono">AUTHORIZED</span>
                 </div>
               </div>
-              <button onClick={() => auth.signOut()} className="p-2 hover:text-neon-green transition-colors">
+              <button onClick={() => supabase.auth.signOut()} className="p-2 hover:text-neon-green transition-colors">
                 <LogOut className="w-5 h-5" />
               </button>
             </>
           ) : (
-            <button 
-              onClick={handleLogin}
-              className="w-full py-3 bg-white text-black font-black uppercase tracking-tighter text-xs hover:bg-neon-green transition-all"
-            >
-              Initialize Access
-            </button>
+            <div className="w-full flex justify-center text-xs font-black uppercase tracking-widest text-white/50">
+              Awaiting Auth...
+            </div>
           )}
         </div>
       </div>
@@ -523,7 +612,7 @@ export default function App() {
               <header className="space-y-4">
                 <div className="text-neon-green font-mono text-xs tracking-[0.3em] uppercase">Status: Online</div>
                 <h2 className="text-7xl font-black uppercase tracking-tighter leading-[0.9]">Learning <br /> Dashboard</h2>
-                <p className="text-slate-500 font-medium max-w-xl">Welcome back, {user.displayName}. Your cognitive enhancement protocols are ready.</p>
+                <p className="text-slate-500 font-medium max-w-xl">Welcome back, {user.email?.split('@')[0]}. Your cognitive enhancement protocols are ready.</p>
               </header>
 
               {roadmaps.length === 0 ? (
@@ -629,7 +718,7 @@ export default function App() {
                 </div>
                 <div className="flex items-center gap-4">
                   <h2 className="text-4xl font-black uppercase tracking-tighter">{selectedRoadmap.title}</h2>
-                  {user && user.uid === selectedRoadmap.userId ? (
+                  {user && user.id === selectedRoadmap.userId ? (
                     <button 
                       onClick={handleShareRoadmap}
                       disabled={sharing}
@@ -648,10 +737,10 @@ export default function App() {
                     </button>
                   ) : (
                     <button 
-                      onClick={handleLogin}
+                      onClick={() => window.location.reload()}
                       className="px-4 py-2 bg-white text-black font-black uppercase tracking-tighter text-[10px] hover:bg-neon-green transition-all"
                     >
-                      Login to Clone
+                      Login Required
                     </button>
                   )}
                 </div>
